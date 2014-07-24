@@ -1,0 +1,216 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Copy;
+
+package rpmrepo::conf;
+our $basedir = ".";
+# TODO: add a basedir cmdline argument to vary the above.
+
+# Do not modify the below in this file. Create a main.cf (see below) and modify things there.
+
+# Location of the output (under $basedir)
+our $repoloc = "repository";
+
+# Location of our state database (under $basedir). If this is ever lost,
+# rpmrepo needs to start over from scratch. You may want to keep backups.
+our $dbloc = "db";
+
+# Directory (under $basedir) containing new RPM files to add to the repository.
+our $inputloc = "input";
+
+# Repository flavours. Should contain the following keys:
+# - basearchs: the base architectures wanted/supported for this flavour
+# - index_gpg: whether to provide a repomd.xml.asc and repomd.xml.key
+#   file, openSUSE-style
+our %flavours = (
+	'el7' =>      {basearchs => [ 'x86_64' ],        index_gpg => 0},
+	'fedora' =>   {basearchs => [ 'i386', 'x86_64'], index_gpg => 0},
+	'opensuse' => {basearchs => [ 'i586', 'x86_64'], index_gpg => 1},
+);
+
+# The repositories we want to have. Will be created, even if they're
+# empty. Should contain the following keys:
+# - gpgkey: the key with which to sign packages (unless no (re-)signing
+#   is necessary)
+# - enabled: whether to use this repository. Future releases of rpmrepo
+#   may remove state and temporary data for repositories that don't
+#   exist in the %repositories hash, while retaining such data (but not
+#   updating the repository) if enabled is zero.
+# - flavour: an entry from %flavours
+# - nopasswdhack: if defined, use the value as an LD_PRELOAD hack to
+#   avoid the rpmsign password prompt. See the README file for more
+#   details.
+our %repositories = (
+	'continuous/fedora/19' => {gpgkey => '10a04d46', enabled => 1, flavour => 'fedora', nopasswdhack => "$basedir/rpmsign.so"},
+	'fedora/19' => 		  {gpgkey => '6773d225', enabled => 1, flavour => 'fedora', nopasswdhack => 0},
+);
+
+# The RPM metadata field on which to base which repository to direct a package
+# to.
+our $repomapfield = "Release";
+# The regex to run over $repomapfield. This regex should store the key
+# for %repomap in $1. The default assumes a Release value which looks
+# something like:
+#   0.<svnrevision>.<distribution>
+# e.g.,
+#   0.1480.fc19
+# and parses out the "fc19" part.
+our $repomapre = '.*\.([^\.]+)$';
+
+# Repository mapping.
+our %repomap = (
+	fc19 => 'continuous/fedora/19',
+);
+
+if(-f './conf/main.cf') {
+	require "./conf/main.cf";
+}
+
+$repoloc = "$basedir/$repoloc";
+$dbloc = "$basedir/$dbloc";
+$inputloc = "$basedir/$inputloc";
+
+package rpmrepo::db;
+
+use MLDBM qw(DB_File Storable);
+use Fcntl;
+
+our %packages;
+our %repositories;
+
+if(! -d $rpmrepo::conf::dbloc) {
+	mkdir $rpmrepo::conf::dbloc;
+}
+
+tie(%packages, 'MLDBM', $rpmrepo::conf::dbloc . "/packages.db") or die "Could not open packages database: $!\n";
+tie(%repositories, 'MLDBM', $rpmrepo::conf::dbloc . "/repositories.db") or die "Could not open repositories database: $!\n";
+tie(%sources, 'MLDBM', $rpmrepo::conf::dbloc . "/sources.db") or die "Could not open sources database: $!\n";
+
+1;
+
+package rpmrepo::work;
+
+sub new {
+	my $class = shift;
+	my $self = {};
+	bless $self, $class;
+}
+
+sub unlink {
+	my ($self, $file) = @_;
+
+	push @{$self->{unlinks}}, $file;
+}
+
+sub copy {
+	my ($self, $source, $target) = @_;
+
+	push @{$self->{copies}}, {"source" => $source, "target" =>$target };
+}
+
+sub move {
+	my ($self, $source, $target) = @_;
+
+	$self->copy($source, $target);
+	$self->unlink($source);
+}
+
+sub earlyshell {
+	my ($self, $command) = @_;
+
+	push @{$self->{earlyshells}}, $command;
+}
+
+sub midshell {
+	my ($self, $command) = @_;
+
+	push @{$self->{midshells}}, $command;
+}
+
+sub lateshell {
+	my ($self, $command) = @_;
+	
+	push @{$self->{lateshells}}, $command;
+}
+
+sub DESTROY {
+	my $self = shift;
+
+	foreach my $command(@{$self->{earlyshells}}) {
+		print "Running `$command'\n";
+		system($command);
+	}
+	foreach my $copy(@{$self->{copies}}) {
+		print "Copying `" . $copy->{source} . "' to `" . $copy->{target} . "'\n";
+		copy($copy->{source}, $copy->{target});
+	}
+	foreach my $command(@{$self->{midshells}}) {
+		print "Running `$command'\n";
+		system($command);
+	}
+	foreach my $unlink(@{$self->{unlinks}}) {
+		print "Removing `$unlink'\n";
+		CORE::unlink ($unlink);
+	}
+	foreach my $command(@{$self->{lateshells}}) {
+		print "Running `$command'\n";
+		system($command);
+	}
+}
+
+1;
+
+package main;
+
+my $work = new rpmrepo::work;
+
+print "Scanning for files...\n";
+
+foreach my $file(glob "$inputloc/*rpm") {
+	print "Found $file\n";
+	open RPMINFO, "rpm -qip $file|";
+	my %fileinfo;
+	while(my $line = <RPMINFO>) {
+		chomp $line;
+		my ($key, $value) = split / *: /, $line, 2;
+		$fileinfo{$key} = $value;
+	}
+	close RPMINFO;
+	my $package;
+	my $source;
+	my $repository;
+	my $reposhort;
+	if(exists($rpmrepo::db::packages{$fileinfo{Name}})) {
+		$package = $rpmrepo::db::packages{$fileinfo{Name}};
+	} else {
+		$package = {};
+	}
+	if(($fileinfo{"Source RPM"} ne "(none)") && exists($rpmrepo::db::sources{$fileinfo{"Source RPM"}})) {
+		$source = $rpmrepo::db::sources{$fileinfo{"Source RPM"}};
+	} else {
+		$source = {};
+	}
+	if(defined($rpmrepo::conf::repomapfield) && defined($rpmrepo::conf::repomapre)) {
+		if($fileinfo{$rpmrepo::conf::repomapfield} =~ $rpmrepo::conf::repomapre) {
+			$reposhort = $1;
+		}
+	}
+	# TODO: read a reposhort from the command line if no repomapfield was given.
+	if(!defined($reposhort)) {
+		die "parsing of repository failed!\n";
+	}
+	if(!exists($rpmrepo::conf::repomap{$reposhort})) {
+		die "$reposhort not found in \%rpmrepo::conf::repomap!\n";
+	}
+	if(exists($rpmrepo::db::repositories{$rpmrepo::conf::repomap{$reposhort}})) {
+		$repository = $rpmrepo::db::repositories{$rpmrepo::conf::repomap{$reposhort}};
+	} else {
+		$repository = {};
+	}
+}
+
+print "Scan ready, doing actual work now!\n";
+undef $work;
+print "Done!\n";
