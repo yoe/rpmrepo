@@ -1,5 +1,7 @@
 #rpmrepo
 
+NOTE: rpmrepo is far from ready. Move along, nothing to see here. Yet.
+
 or, "`reprepro` for RPM packages". Sortof.
 
 I [like](http://grep.be/blog/en/lazyweb/Reprepro_for_RPM) reprepro. It's
