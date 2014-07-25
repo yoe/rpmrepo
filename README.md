@@ -80,10 +80,10 @@ shouldn't need to modify it. If you do find yourself having to modify
 The anonymous hashes should have these keys:
 
 - `basearchs`: the base architectures expected by this flavour. Should
-  be an anonymous array. This is 'i386' and 'x86\_64' for fedora-like
+  be an anonymous array. This is `i386` and `x86_64` for fedora-like
   distributions (including Red Hat Enterprise up to and including EL6),
-  'i586' and 'x86\_64' for openSUSE, and just 'x86\_64' for EL7.
-- `index\_gpg`: whether to sign the `repomd.xml` file with a
+  `i586` and `x86_64` for openSUSE, and just `x86_64` for EL7.
+- `index_gpg`: whether to sign the `repomd.xml` file with a
   `repomd.xml.asc` and `repomd.xml.key` file, openSUSE-style.
 
 ###%repositories
@@ -96,7 +96,7 @@ the following keys:
 - `rpmsign`: set to nonzero if RPM packages in this repository should be
   signed.
 - `gpgkey`: the GPG key with which to sign RPM packages. If its flavour
-  has `index\_gpg` enabled, will also be used to sign `repomd.xml`.
+  has `index_gpg` enabled, will also be used to sign `repomd.xml`.
 - `enabled`: should usually be set to 1. If set to 0, `rpmrepo` will
   pretend the repository does not exist. A future release of `rpmrepo`
   _may_ remove a repository's state if it does not appear in the
@@ -106,7 +106,7 @@ the following keys:
   this repository.
 - `nopasswdhack`: if you want to run `rpmrepo` noninteractively, and you
   want it to sign RPM packages, then this _must_ be set to an
-  `LD\_PRELOAD`able `.so` file which must override the `getpass`
+  `LD_PRELOAD`able `.so` file which must override the `getpass`
   function. This is because otherwise, `rpmsign` waits forever for you
   to enter a password, _even_ if there is no password on the GPG key.
   Obviously the return value of your overriding `getpass` function
